@@ -1,7 +1,10 @@
+import os
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
 
+from dotenv import load_dotenv
+from moviepy.config import change_settings
 from moviepy.editor import CompositeVideoClip
 from moviepy.editor import TextClip
 from moviepy.editor import VideoFileClip
@@ -9,6 +12,11 @@ from moviepy.editor import concatenate_videoclips
 
 from bot.constants import MAX_CLIPS
 from bot.constants import READING_SPEED
+
+load_dotenv()
+
+if imagemagick := os.getenv("IMAGEMAGICK_BINARY"):
+    change_settings({"IMAGEMAGICK_BINARY": imagemagick})
 
 
 @dataclass
