@@ -77,6 +77,10 @@ async def start(update: Update, context: CustomContext) -> None:
     user = update.effective_user
     if user is None:
         return
+
+    await context.application.bot.set_my_commands(
+        [("new", "Start creating a new MEME"), ("end", "Finish creating a new MEME")]
+    )
     await update.message.reply_html(
         rf"Hi {user.mention_html()}!",
         reply_markup=ForceReply(selective=True),
@@ -97,32 +101,28 @@ async def new_video_command(update: Update, context: CustomContext) -> None:
     if context.data.is_new_video:
         await update.message.reply_text("I am already creating a new MEME. Please send gifs with the some text label.")
         return
-    # First argument is the name of the video
-    if update.message.text is None or len(update.message.text.split()) < 2:
-        await update.message.reply_text("Please send /new 'video_name' command with the name of the video")
-        return
 
-    args = update.message.text.split()
-    name = "_".join(args[1:])
-    await update.message.reply_text(
-        f"Ok. I will start creating a new MEME '{name}'. Please send gifs with the some text label."
-    )
+    await update.message.reply_text("Ok. I will start creating a new MEME. Please send gifs with the some text label.")
     context.data.is_new_video = True
-    context.data.name = name
 
 
 async def end_command(update: Update, context: CustomContext) -> None:
     if update.message is None or context.data is None:
         return
+    if not context.data.is_new_video:
+        await update.message.reply_text("I will ignore that. Please send /new command to start creating a new MEME")
+        return
     await update.message.reply_text("Ok. Rendering...")
     context.data.is_new_video = False
     with tempfile.NamedTemporaryFile(suffix=".mp4") as f:
         await context.data.render(pathlib.Path(f.name))
-        await context.data.cleanup()
         await update.message.reply_video(video=open(f.name, "rb"))
+        await context.data.cleanup()
 
 
 async def video_message_handler(update: Update, context: CustomContext) -> None:
+    if await video_edit_handler(update, context):
+        return
     if update.message is None or context.data is None:
         return
     if not context.data.is_new_video:
@@ -132,11 +132,25 @@ async def video_message_handler(update: Update, context: CustomContext) -> None:
     if update.message.document is None:
         await update.message.reply_text("Please send gifs with the some text label.")
         return
+
     try:
-        context.data.add_segment(await downloader(update.message.document, context), update.message.caption)
+        context.data.add_segment(
+            update.message.message_id, await downloader(update.message.document, context), update.message.caption
+        )
         await update.message.reply_text("Got video! Give me more or send /end to finish.")
     except ValueError as e:
         await update.message.reply_text(f"Error: {e}")
+
+
+async def video_edit_handler(update: Update, context: CustomContext) -> bool:
+    if update.edited_message is None or context.data is None or not context.data.is_new_video:
+        return False
+
+    try:
+        context.data.edit_caption(update.edited_message.message_id, update.edited_message.caption)
+    except ValueError:
+        pass
+    return True
 
 
 async def missing_video_handler(update: Update, context: CustomContext) -> None:

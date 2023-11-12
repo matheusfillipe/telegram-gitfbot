@@ -1,1 +1,5 @@
 MAX_FILESIZE = 1024 * 1024 * 50  # 50MB
+WORD_READING_SPEED = 200  # 200 words per minute
+AVERAGE_WORD_LENGTH = 5  # 5 characters per word
+READING_SPEED = WORD_READING_SPEED * AVERAGE_WORD_LENGTH / 60  # characters per second
+MAX_CLIPS = 15
