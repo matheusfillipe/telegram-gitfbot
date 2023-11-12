@@ -1,13 +1,16 @@
 #!/usr/bin/env python
 # pylint: disable=unused-argument
-# This program is dedicated to the public domain under the CC0 license.
+
 import logging
 import os
+import pathlib
+import tempfile
 from collections import defaultdict
 from typing import DefaultDict
 from typing import Optional
 
 from dotenv import load_dotenv
+from telegram import Document
 from telegram import ForceReply
 from telegram import Update
 from telegram.ext import Application
@@ -18,16 +21,15 @@ from telegram.ext import ExtBot
 from telegram.ext import MessageHandler
 from telegram.ext import filters
 
+from bot.constants import MAX_FILESIZE
+from bot.video_data import VideoData
+
 # Enable logging
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 # set higher logging level for httpx to avoid all GET and POST requests being logged
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
-
-
-class VideoData:
-    is_new_video: bool = False
 
 
 class ChatData:
@@ -49,23 +51,32 @@ class CustomContext(CallbackContext[ExtBot, dict, ChatData, dict]):
         self._user_id: Optional[int] = user_id
 
     @property
-    def is_new_video(self) -> bool:
-        if not self._user_id or not self.chat_data:
-            return False
-        return self.chat_data.usermap[self._user_id].is_new_video
-
-    @is_new_video.setter
-    def is_new_video(self, value: bool) -> None:
+    def data(self) -> VideoData | None:
         if not self._user_id or not self.chat_data:
             return None
-        self.chat_data.usermap[self._user_id].is_new_video = value
+        return self.chat_data.usermap[self._user_id]
+
+
+async def downloader(document: Document, context: CustomContext) -> pathlib.Path:
+    with tempfile.NamedTemporaryFile(delete=False) as f:
+        file = await context.bot.get_file(document)
+        if file is None or file.file_size is None:
+            raise ValueError("Failed to get file size")
+        if file.file_size > MAX_FILESIZE:
+            raise ValueError(f"File is too big: {file.file_size} > {MAX_FILESIZE}")
+        await file.download_to_drive(f.name)
+        return pathlib.Path(f.name)
 
 
 # Define a few command handlers. These usually take the two arguments update and
 # context.
 async def start(update: Update, context: CustomContext) -> None:
     """Send a message when the command /start is issued."""
+    if update.message is None:
+        return
     user = update.effective_user
+    if user is None:
+        return
     await update.message.reply_html(
         rf"Hi {user.mention_html()}!",
         reply_markup=ForceReply(selective=True),
@@ -81,35 +92,57 @@ async def help_command(update: Update, context: CustomContext) -> None:
 
 async def new_video_command(update: Update, context: CustomContext) -> None:
     """Echo the user message."""
-    if update.message is None:
+    if update.message is None or context.data is None:
         return
-    if context.is_new_video:
+    if context.data.is_new_video:
         await update.message.reply_text("I am already creating a new MEME. Please send gifs with the some text label.")
         return
-    await update.message.reply_text("Ok. I will start creating a new MEME. Please send gifs with the some text label.")
-    context.is_new_video = True
+    # First argument is the name of the video
+    if update.message.text is None or len(update.message.text.split()) < 2:
+        await update.message.reply_text("Please send /new 'video_name' command with the name of the video")
+        return
+
+    args = update.message.text.split()
+    name = "_".join(args[1:])
+    await update.message.reply_text(
+        f"Ok. I will start creating a new MEME '{name}'. Please send gifs with the some text label."
+    )
+    context.data.is_new_video = True
+    context.data.name = name
 
 
 async def end_command(update: Update, context: CustomContext) -> None:
-    if update.message is None:
+    if update.message is None or context.data is None:
         return
     await update.message.reply_text("Ok. Rendering...")
-    context.is_new_video = False
+    context.data.is_new_video = False
+    with tempfile.NamedTemporaryFile(suffix=".mp4") as f:
+        await context.data.render(pathlib.Path(f.name))
+        await context.data.cleanup()
+        await update.message.reply_video(video=open(f.name, "rb"))
 
 
 async def video_message_handler(update: Update, context: CustomContext) -> None:
-    if update.message is None:
+    if update.message is None or context.data is None:
         return
-    if not context.is_new_video:
+    if not context.data.is_new_video:
         await update.message.reply_text("I will ignore that. Please send /new command to start creating a new MEME")
         return
-    await update.message.reply_text(f"Got video with text {update.message.text}")
 
-
-async def missing_gif_handler(update: Update, context: CustomContext) -> None:
-    if update.message is None:
+    if update.message.document is None:
+        await update.message.reply_text("Please send gifs with the some text label.")
         return
-    if context.is_new_video:
+    try:
+        context.data.add_segment(await downloader(update.message.document, context), update.message.caption)
+        await update.message.reply_text("Got video! Give me more or send /end to finish.")
+    except ValueError as e:
+        await update.message.reply_text(f"Error: {e}")
+
+
+async def missing_video_handler(update: Update, context: CustomContext) -> None:
+    if update.message is None or context.data is None:
+        return
+    if context.data.is_new_video:
         await update.message.reply_text("I will ignore that. Please send messages with video")
 
 
@@ -132,7 +165,7 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.VIDEO | filters.ANIMATION, video_message_handler))
 
     # on non command i.e message - echo the message on Telegram
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, missing_gif_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, missing_video_handler))
 
     # Run the bot until the user presses Ctrl-C
     application.run_polling(allowed_updates=Update.ALL_TYPES)
