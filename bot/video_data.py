@@ -63,6 +63,7 @@ class VideoData:
                         align="North",
                         method="caption",
                         color="white",
+                        font="DejaVu-Sans-Bold",
                     )
                     .set_duration(duration)
                     .set_position(("center", "bottom"))
@@ -83,3 +84,5 @@ class VideoData:
         for segment in self.segments:
             segment.file.unlink(True)
         self.segments.clear()
+
+print(TextClip.list("font"))
